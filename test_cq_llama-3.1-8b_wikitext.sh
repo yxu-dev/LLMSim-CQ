@@ -4,6 +4,6 @@ python -m lm_eval.run_models --model hf \
     --apply_chat_template \
     --fewshot_as_multiturn \
     --batch_size 1 \
-    --device cuda:6 \
+    --device cuda:4 \
     --simi \
     --output_path results/llama-3.1-8b/cq_4c8b_wikitext_full.json
