@@ -990,7 +990,8 @@ class HFLM(TemplateLM):
                 transformers.AutoModelForCausalLM,
                 transformers.AutoModelForVision2Seq,
             )
-            return self.model(inps).logits
+            # Enable cache for CQ quantization to take effect
+            return self.model(inps, use_cache=True).logits
 
     def _model_generate(
         self,
