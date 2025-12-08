@@ -100,15 +100,25 @@ def quantize_cq(input_tensor: torch.Tensor, centroids: torch.Tensor) -> torch.Te
         total_channels == num_groups * group_channels
     ), f"Mismatched dimensions: {total_channels} vs {num_groups} * {group_channels}"
 
-    reshaped = input_tensor.view(num_tokens, num_groups, group_channels)
-    quantized = torch.empty((num_tokens, num_groups), dtype=torch.uint8, device=input_tensor.device)
-
-    # Loop over channel groups to avoid huge temporary tensors.
-    for group_idx in range(num_groups):
-        group_data = reshaped[:, group_idx, :].to(torch.float32)
-        group_centroids = centroids[group_idx].to(input_tensor.device)
-        distances = torch.cdist(group_data, group_centroids, p=2.0)
-        quantized[:, group_idx] = torch.argmin(distances, dim=1).to(torch.uint8)
+    # Reshape input: [num_tokens, num_groups, group_channels]
+    reshaped = input_tensor.view(num_tokens, num_groups, group_channels).float()
+    
+    # Ensure centroids are on the same device
+    centroids = centroids.to(input_tensor.device)
+    
+    # Vectorized distance computation: avoid Python loop
+    # reshaped: [num_tokens, num_groups, group_channels]
+    # centroids: [num_groups, num_centroids, group_channels]
+    # Compute L2 distance for all groups at once
+    # Expand dimensions for broadcasting: [num_tokens, num_groups, 1, group_channels] - [1, num_groups, num_centroids, group_channels]
+    reshaped_expanded = reshaped.unsqueeze(2)  # [num_tokens, num_groups, 1, group_channels]
+    centroids_expanded = centroids.unsqueeze(0)  # [1, num_groups, num_centroids, group_channels]
+    
+    # Compute squared L2 distance (faster than torch.cdist)
+    distances = torch.sum((reshaped_expanded - centroids_expanded) ** 2, dim=-1)  # [num_tokens, num_groups, num_centroids]
+    
+    # Find nearest centroid for each group
+    quantized = torch.argmin(distances, dim=-1).to(torch.uint8)  # [num_tokens, num_groups]
 
     return quantized
 

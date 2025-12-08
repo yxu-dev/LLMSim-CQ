@@ -100,3 +100,8 @@ print("\n下一步: 运行完整的模型测试来验证实际效果")
 print("  运行: python test_cq_fix.py")
 print("  或: ./verify_cq_fix.sh")
 
+
+
+
+
+

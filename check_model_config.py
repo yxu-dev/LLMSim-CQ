@@ -49,3 +49,8 @@ if hasattr(config, 'num_key_value_heads'):
     else:
         print(f"  ❌ 维度不匹配！")
 
+
+
+
+
+

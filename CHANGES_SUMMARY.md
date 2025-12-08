@@ -240,3 +240,8 @@ if getattr(self, "_cq_enabled", False):
 **影响范围**：Loglikelihood 评估中的 CQ 量化  
 **修改行数**：1 行核心代码 + 5 个新增文件
 
+
+
+
+
+

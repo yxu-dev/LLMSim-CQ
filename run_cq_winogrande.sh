@@ -10,3 +10,8 @@ python -m lm_eval.run_models --model hf \
     --device cuda:5 \
     --output_path results/llama-3.1-8b/cq_4c8b_winogrande_full.json
 
+
+
+
+
+

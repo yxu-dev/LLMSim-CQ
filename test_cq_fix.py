@@ -58,3 +58,8 @@ if max_diff > 1e-3:
 else:
     print("✗ BAD: No significant difference - CQ might not be active")
 
+
+
+
+
+

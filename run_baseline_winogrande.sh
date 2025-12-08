@@ -10,3 +10,8 @@ python -m lm_eval.run_models --model hf \
     --device cuda:0 \
     --output_path results/llama-3.1-8b/baseline_winogrande_full.json
 
+
+
+
+
+

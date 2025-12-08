@@ -5,15 +5,15 @@
 set -e
 
 # 2. 指定要使用的 GPU
-export CUDA_VISIBLE_DEVICES=7
+export CUDA_VISIBLE_DEVICES=6
 
 # 3. 配置 Python 脚本和路径
 # 确保这个脚本与您的 .py 脚本在同一目录，或者相应地修改路径
 PYTHON_SCRIPT="run_weighted_kmeans.py" 
 
-FISHER_PATH="/home/yx277/workspace-vq/fisher_runs_output/run_llama-3.1-8b-4c8b/fisher_diag.pt"
-DATA_PATH="/home/yx277/workspace-vq/LLMSim-CQ/output/kv-simi-llama-3.1-8b-wikitext"
-OUTPUT_DIR="/home/yx277/workspace-vq/LLMSim-CQ/fisher_weighted_codebook/llama-3.1-8b/4c8b"
+FISHER_PATH="/home/zz359/workspace-vq/LLMSim-CQ/fisher_runs_output/run_llama-3.1-8b-4c8b/fisher_diag.pt"
+DATA_PATH="/home/zz359/workspace-vq/LLMSim-CQ/output/kv/llama-3.1-8b"
+OUTPUT_DIR="/home/zz359/workspace-vq/LLMSim-CQ/fisher_weighted_codebook/llama-3.1-8b/4c8b"
 
 # --- 执行 ---
 

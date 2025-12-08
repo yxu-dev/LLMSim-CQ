@@ -158,3 +158,8 @@ def patched_forward(self, *args, **kwargs):
 
 修复后，用户应该能观察到量化对精度的真实影响。
 
+
+
+
+
+
