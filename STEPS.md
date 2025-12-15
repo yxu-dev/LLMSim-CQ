@@ -11,4 +11,12 @@ bash run_generate_centroids_llama-3.1-8b.sh
 ```
 
 ### 3. Evaluation
-pending...
+Baseline
+'''
+bash test_fp_llama-3.1-8b_optimized.sh
+'''
+
+CQ
+'''
+bash test_cq_llama-3.1-8b_optimized.sh
+'''
