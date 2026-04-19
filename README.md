@@ -1,4 +1,4 @@
-# LLMSim-CQ-zzy
+# LLMSim-CQ
 
 This project extends `lm-evaluation-harness` to reproduce and evaluate:
 
