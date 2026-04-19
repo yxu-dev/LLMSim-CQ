@@ -13,7 +13,7 @@ bash run_generate_centroids_llama-3.1-8b.sh
 ### 3. Evaluation
 Baseline
 '''
-bash test_fp_llama-3.1-8b_optimized.sh
+bash test_baseline_winogrande_llama3.1-8b.sh
 '''
 
 CQ

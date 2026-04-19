@@ -105,6 +105,7 @@ class HFLM(TemplateLM):
         chat_template_args: dict[str, Any] | None = None,
         cq_codebook_dir: str | None = None,
         cq_layer_prefix: str = "layer",
+        rtn_pertensor_bits: int | str | None = None,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -234,6 +235,7 @@ class HFLM(TemplateLM):
         if isinstance(self.model, torch.nn.Module):
             self.model.eval()
             self.model.tie_weights()
+            self._maybe_enable_rtn(rtn_pertensor_bits)
             self._maybe_enable_cq(cq_codebook_dir, cq_layer_prefix)
 
         self.think_end_token = (
@@ -454,6 +456,34 @@ class HFLM(TemplateLM):
             "Enabled CQ KV-cache quantization using %s (prefix=%s)",
             cq_codebook_dir,
             layer_prefix,
+        )
+
+    def _maybe_enable_rtn(self, rtn_pertensor_bits: int | str | None) -> None:
+        """Optionally apply RTN per-tensor quantization to Linear weights."""
+        if rtn_pertensor_bits is None or rtn_pertensor_bits == "":
+            return
+        try:
+            bits = int(rtn_pertensor_bits)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Invalid rtn_pertensor_bits={rtn_pertensor_bits}; expected integer in [2, 8]"
+            ) from exc
+
+        if bits < 2 or bits > 8:
+            raise ValueError(f"rtn_pertensor_bits must be in [2, 8], got {bits}")
+
+        try:
+            from RTN_pertensor_baseline import apply_rtn_per_tensor_to_model
+        except ImportError as exc:
+            raise RuntimeError(
+                "RTN quantization requested, but RTN_pertensor_baseline.py is unavailable."
+            ) from exc
+
+        num_layers = apply_rtn_per_tensor_to_model(self.model, n_bits=bits)
+        eval_logger.info(
+            "Enabled RTN per-tensor quantization (bits=%d) on %d Linear layers",
+            bits,
+            num_layers,
         )
 
     @property
