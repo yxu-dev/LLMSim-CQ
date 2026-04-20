@@ -1,90 +1,58 @@
 # LLMSim-CQ
 
-This project extends `lm-evaluation-harness` to reproduce and evaluate:
+This repository is an engineering reproduction of the NeurIPS 2024 paper:
 
-- **CQ (Coupled Quantization) for KV-cache**
-- **RTN per-tensor baseline**
-- Main model target: `meta-llama/Llama-3.1-8B`
+KV Cache is 1 Bit Per Channel: Efficient Large Language Model Inference with Coupled Quantization  
+Tianyi Zhang, Jonah Yi, Zhaozhuo Xu, Anshumali Shrivastava  
+Paper URL: https://proceedings.neurips.cc/paper_files/paper/2024/file/05d6b5b6901fb57d2c287e1d3ce6d63c-Paper-Conference.pdf
 
----
-
-## What This Project Is About
-
-Modern LLM inference is often bottlenecked not only by model weights, but by **KV-cache memory traffic** during autoregressive decoding.  
-This project studies a practical question:
-
-> Can we compress KV-cache aggressively while preserving downstream accuracy and language modeling quality?
-
-To answer this, the repository builds a full reproduction pipeline around Coupled Quantization (CQ), including:
-
-- calibration data collection from real model activations
-- Fisher-aware codebook learning
-- runtime integration into `lm_eval` evaluation flows
-- side-by-side comparison against FP and RTN baselines
-
-In short, this project is an engineering-focused reproduction of **accuracy-aware KV-cache compression** for real evaluation workloads.
+At the time of writing, this project assumes there is no official public code release linked from the paper page, so this repo provides an end-to-end practical reproduction pipeline.
 
 ---
 
-## Method Intuition (Why CQ Works)
+## What This Repo Reproduces
 
-### 1) Coupled Quantization over channel groups
+- Coupled Quantization (CQ) for KV-cache compression
+- RTN per-tensor baseline for comparison
+- FP (full precision) baseline for comparison
+- End-to-end runs on real evaluation workloads (for example Winogrande and perplexity)
 
-Instead of quantizing each channel independently, CQ groups multiple channels together (for example `2c`, `4c`, `8c`) and quantizes the group as one unit.  
-This captures cross-channel structure in KV states and typically yields better fidelity under the same bit budget.
+Main target model family in current scripts:
 
-### 2) Fisher-weighted distortion objective
-
-Not every channel contributes equally to loss.  
-This project uses Fisher diagonal statistics as sensitivity weights, so codebook learning minimizes a **task-relevant weighted error** rather than plain MSE.
-
-Conceptually:
-
-- high-Fisher dimensions are "expensive to distort"
-- low-Fisher dimensions can tolerate more quantization noise
-
-This shifts quantization capacity toward what matters most for model behavior.
-
-### 3) End-to-end evaluation
-
-The method is validated on:
-
-- downstream task metrics (for example Winogrande)
-- perplexity behavior under `use_cache=True`
-
-So results reflect actual inference-time quality, not only offline tensor reconstruction error.
+- meta-llama/Meta-Llama-3.1-8B (export stage)
+- meta-llama/Llama-3.1-8B (evaluation stage)
 
 ---
 
-## Project Status
+## Current Default Configuration In Scripts
 
-- Baseline, RTN, and multiple CQ settings have been run successfully.
-- The only remaining unfinished run is **`2c4b` full experiment**.
-- Existing Winogrande outputs are under `results/llama-3.1-8b/` (for example `2c8b`, `4c8b`, `8c8b`).
+The checked-in shell scripts are currently configured for 4c8b runs by default:
+
+- num_coupled_channels = 4
+- num_bits = 8
+- key_export_domain = pre_rope
+- export/data root default = output/llama-3.1-8b-4c8b
+
+If you want different settings (for example 2c4b), change the script arguments or override environment variables described below.
 
 ---
 
-## Environment Setup (Conda `vq`)
+## Environment Setup
 
-### 1) Enter the project directory
+### 1) Enter the project
 
 ```bash
 cd LLMSim-CQ
 ```
 
-### 2) Create the `vq` environment (one-time)
+### 2) Create and activate a Conda environment
 
 ```bash
 conda create -n vq python=3.10 -y
-```
-
-### 3) Activate the environment
-
-```bash
 conda activate vq
 ```
 
-### 4) Install dependencies for this project
+### 3) Install dependencies
 
 ```bash
 pip install -U pip setuptools wheel
@@ -92,17 +60,12 @@ pip install -e .
 pip install torch transformers datasets accelerate sentencepiece
 ```
 
-What gets installed:
+Notes:
 
-- Core harness dependencies from `pyproject.toml` via `pip install -e .`
-- Runtime essentials used by your scripts:
-  - `torch`
-  - `transformers`
-  - `datasets`
-  - `accelerate`
-  - `sentencepiece`
+- pip install -e . installs project dependencies from pyproject.toml.
+- Extra installs above ensure runtime packages required by the reproduction scripts are present.
 
-### 5) (Optional) Start an interactive Slurm session
+### 4) Optional Slurm interactive session
 
 ```bash
 srun -p athena-genai -t 24:00:00 -w node5 --pty bash
@@ -110,152 +73,133 @@ srun -p athena-genai -t 24:00:00 -w node5 --pty bash
 
 ---
 
-## Artifact Diagram
+## Environment Check (Recommended Before Long Runs)
 
-```mermaid
-flowchart TD
-    A["Step 1: Export KV + Fisher<br/>`run_export_kv_and_fisher_llama-3.1-8b.sh`"] --> B["Artifacts A<br/>`output/llama-3.1-8b-2c4b/kv_cache/sample*_layer*_key.pt`<br/>`output/llama-3.1-8b-2c4b/kv_cache/sample*_layer*_value.pt`<br/>`output/llama-3.1-8b-2c4b/fisher_diag.pt`"]
-    B --> C["Step 2: Learn centroids<br/>`run_generate_centroids_llama-3.1-8b.sh`"]
-    C --> D["Artifacts B (Codebooks)<br/>`output/llama-3.1-8b-2c4b/centroids/k_centroids_fisher_layer{i}.npy`<br/>`output/llama-3.1-8b-2c4b/centroids/v_centroids_fisher_layer{i}.npy`"]
-    D --> E["Step 3: CQ evaluation<br/>`test_cq_llama-3.1-8b_optimized.sh`"]
-    D --> F["Step 3: FP baseline<br/>`test_baseline_winogrande_llama3.1-8b.sh`"]
-    D --> G["Step 4: RTN baseline<br/>`test_rtn_winogrande_llama3.1-8b.sh`"]
-    E --> H["Final outputs<br/>`results/llama-3.1-8b/*.json` + logs"]
-    F --> H
-    G --> H
-```
-
----
-
-## Quickstart (Fast Reproduction Path)
-
-If you want a minimal end-to-end CQ run (currently configured for `2c4b`):
+Run these checks once before expensive jobs:
 
 ```bash
-# Step 1: export KV activations + Fisher diagonal
-bash run_export_kv_and_fisher_llama-3.1-8b.sh
-
-# Step 2: generate per-layer centroids
-bash run_generate_centroids_llama-3.1-8b.sh
-
-# Step 3: run CQ on Winogrande
-bash test_cq_llama-3.1-8b_optimized.sh
-
-# Step 4: run FP baseline for comparison
-bash test_baseline_winogrande_llama3.1-8b.sh
+which python
+python --version
+python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"
+python -c "import transformers, datasets, accelerate; print('imports ok')"
+python -c "import lm_eval; print('lm_eval import ok')"
+nvidia-smi
 ```
+
+Expected outcome:
+
+- Python is from your vq environment.
+- CUDA is available if you plan to run GPU experiments.
+- All core imports succeed.
 
 ---
 
-## Full Reproduction Steps
+## Reproduction Workflow
 
-Use this sequence: **data export -> centroid learning -> downstream evaluation**.
+Use this sequence:
 
-> Scope note: all commands in this README refer to primary project files only (root and `scripts/`), and intentionally exclude any `trash/` directory content.
+1. Export KV activations + Fisher diagonal
+2. Learn Fisher-weighted centroids per layer
+3. Run CQ evaluation
+4. Run FP baseline
+5. (Optional) Run RTN baseline
 
-### Step 0. Directory conventions
-
-- Export root (current script default):
-  - `output/llama-3.1-8b-2c4b/`
-- Centroid output:
-  - `output/llama-3.1-8b-2c4b/centroids/`
-- Evaluation outputs (both naming styles appear in scripts):
-  - `result/llama-3.1-8b/`
-  - `results/llama-3.1-8b/`
-
-### Step 1. Export KV activations and Fisher
-
-Run the helper script (currently set to `num_coupled_channels=2`, `num_bits=4`):
+### Step 1) Export KV + Fisher
 
 ```bash
 bash run_export_kv_and_fisher_llama-3.1-8b.sh
 ```
 
-Equivalent core command:
+Current script defaults:
 
-```bash
-python export_kv_and_fisher.py \
-  --model "meta-llama/Meta-Llama-3.1-8B" \
-  --output_dir "output/llama-3.1-8b-2c4b" \
-  --num_samples 16 \
-  --max_seq_len 2048 \
-  --key_export_domain post_rope \
-  --num_coupled_channels 2 \
-  --num_bits 4 \
-  --dataset "wikitext" \
-  --dataset_config "wikitext-2-raw-v1"
-```
+- output_dir: output/llama-3.1-8b-4c8b
+- dataset: wikitext / wikitext-2-raw-v1
+- num_samples: 16
+- max_seq_len: 2048
+- key_export_domain: pre_rope
 
-Artifacts produced:
+Produced artifacts:
 
-- `output/.../kv_cache/sample*_layer*_key.pt`
-- `output/.../kv_cache/sample*_layer*_value.pt`
-- `output/.../fisher_diag.pt`
+- output/.../kv_cache/sample*_layer*_key.pt
+- output/.../kv_cache/sample*_layer*_value.pt
+- output/.../fisher_diag.pt
 
-### Step 2. Learn Fisher-weighted centroids per layer
+### Step 2) Generate centroids
 
 ```bash
 bash run_generate_centroids_llama-3.1-8b.sh
 ```
 
-This loops through layers `0..31` and calls `generate_centroids.py` for each layer.
+This loops over all 32 layers and writes:
 
-Artifacts produced:
+- k_centroids_fisher_layer{i}.npy
+- v_centroids_fisher_layer{i}.npy
 
-- `k_centroids_fisher_layer{i}.npy`
-- `v_centroids_fisher_layer{i}.npy`
+Default save path:
 
-Saved at:
+- output/llama-3.1-8b-4c8b/centroids
 
-- `output/llama-3.1-8b-2c4b/centroids/`
-
-### Step 3. Downstream evaluation (Winogrande)
-
-#### 3.1 CQ run
+### Step 3) CQ evaluation (Winogrande)
 
 ```bash
 bash test_cq_llama-3.1-8b_optimized.sh
 ```
 
-Key check:
+Check logs for:
 
-- CQ is enabled by passing `cq_codebook_dir` in `--model_args`.
-- Confirm logs contain `Enabled CQ KV-cache quantization`.
+- Enabled CQ KV-cache quantization
 
-#### 3.2 FP baseline run
+Default outputs:
+
+- results/llama-3.1-8b/cq_4c8b_winogrande_optimized.json
+- cq_test_optimized_log.txt
+
+### Step 4) FP baseline
 
 ```bash
 bash test_baseline_winogrande_llama3.1-8b.sh
 ```
 
-### Step 4. RTN baseline (optional)
+Default outputs:
+
+- result/llama-3.1-8b/baseline_winogrande_optimized.json
+- baseline_test_optimized_log.txt
+
+### Step 5) RTN per-tensor baseline (optional)
 
 ```bash
 bash test_rtn_winogrande_llama3.1-8b.sh
 ```
 
-This uses `rtn_pertensor_bits=4` in `--model_args`.
+This run passes rtn_pertensor_bits=4 via model_args.
 
-### Step 5. Optional perplexity comparison (CQ vs FP)
+Default outputs:
 
-1. Collect activations and Fisher diagonals (see `generate_all_fisher_codebooks_*.sh`).
-2. Train per-layer Fisher-weighted CQ codebooks with `run_weighted_kmeans.py` (already automated in the helper script).
-3. Enable the runtime patch and evaluate perplexity / downstream metrics with the new helper:
+- result/llama-3.1-8b/rtn_pertensor_winogrande.json
+- result/llama-3.1-8b/rtn_pertensor_winogrande.log
+
+---
+
+## Optional: Perplexity Comparison Using scripts/run_cq_eval.py
+
+CQ run:
 
 ```bash
-# CQ
 python scripts/run_cq_eval.py \
   --model meta-llama/Llama-3.1-8B \
-  --codebook-dir /path/to/centroids \
+  --codebook-dir output/llama-3.1-8b-4c8b/centroids \
   --dataset wikitext \
   --dataset-config wikitext-2-raw-v1 \
   --limit 1 \
   --max-eval-tokens 131072
+```
 
-# FP baseline (disable CQ)
+FP baseline run (disable CQ):
+
+```bash
 python scripts/run_cq_eval.py \
   --model meta-llama/Llama-3.1-8B \
-  --codebook-dir /path/to/centroids \
+  --codebook-dir output/llama-3.1-8b-4c8b/centroids \
   --disable-cq \
   --dataset wikitext \
   --dataset-config wikitext-2-raw-v1 \
@@ -263,29 +207,35 @@ python scripts/run_cq_eval.py \
   --max-eval-tokens 131072
 ```
 
-Add `--disable-cq` to obtain the FP baseline for comparison. The script exercises the quantized KV-cache during loss computation by forcing `use_cache=True`, matching the coupled quantization paper setup.
+---
 
-## Sanity Checks Before Long Runs
+## Path and Runtime Notes
 
-- Keep model IDs consistent (`Meta-Llama-3.1-8B` vs `Llama-3.1-8B` naming differences exist in scripts).
-- Make sure `CUDA_VISIBLE_DEVICES` and `--device` target an available GPU.
-- Ensure `cq_codebook_dir` contains complete 32-layer `k/v` centroid files.
-- For pre/post RoPE comparison:
+- Some scripts write to result/... while others write to results/.... Both directories are used in this repo.
+- GPU selection is hardcoded in several scripts (for example cuda:5 or cuda:3). Update them to match your machine.
+- You can override these environment variables where supported:
+  - OUTPUT_DIR for export
+  - DATA_ROOT for centroid generation
+  - CODEBOOK_DIR for CQ evaluation
+  - RESULT_DIR for RTN evaluation
+
+---
+
+## Minimal End-to-End Quickstart
 
 ```bash
-python -m lm_eval.run_models --model hf \
-	--model_args pretrained=meta-llama/Llama-3.1-8B-Instruct,attn_implementation=eager,cq_codebook_dir=/path/to/fisher_weighted_codebook/llama-3.1-8b/4c8b \
-	--tasks wikitext \
-	--device cuda:6 \
-	--limit 10
+bash run_export_kv_and_fisher_llama-3.1-8b.sh
+bash run_generate_centroids_llama-3.1-8b.sh
+bash test_cq_llama-3.1-8b_optimized.sh
+bash test_baseline_winogrande_llama3.1-8b.sh
 ```
 
 ---
 
-## Models Recorded in This Project
+## Models Referenced In This Repo
 
-1. `google/gemma-3-12b-it`
-2. `meta-llama/Llama-3.1-8B-Instruct`
-3. `Qwen/Qwen3-4B-Instruct-2507`
-4. `Qwen/Qwen3-4B-Thinking-2507`
-5. `openai/gpt-oss-20b`
+1. google/gemma-3-12b-it
+2. meta-llama/Llama-3.1-8B-Instruct
+3. Qwen/Qwen3-4B-Instruct-2507
+4. Qwen/Qwen3-4B-Thinking-2507
+5. openai/gpt-oss-20b
