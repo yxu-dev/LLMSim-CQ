@@ -64,6 +64,9 @@ class BlockTokenDataset(Dataset):
         self.data = torch.tensor(all_tokens[:required_tokens], dtype=torch.long)
         # 重塑为 [16, 2048]
         self.data = self.data.reshape(num_samples, seq_len)
+        # 注入 BOS 以稳住 Attention Sink
+        if tokenizer.bos_token_id is not None:
+            self.data[:, 0] = tokenizer.bos_token_id
         
         print(f"[Data] 数据准备完成! 最终数据形状: {self.data.shape}")
 
@@ -92,7 +95,7 @@ def shift_labels_for_ce(input_ids, ignore_index=-100):
 
 # 2. Forward Hook (KV Cache 导出器)
 class KVExporterHook:
-    def __init__(self, output_dir, key_export_domain="post_rope", verbose=False):
+    def __init__(self, output_dir, key_export_domain="pre_rope", verbose=False):
         self.output_dir = output_dir
         self.verbose = verbose
         self.key_export_domain = key_export_domain
@@ -203,11 +206,14 @@ class FisherAccumulatorHook:
         def bwd_hook(mod, grad_input, grad_output):
             # grad_output[0] 是输出的梯度 [Batch, Seq, Dim]
             g = grad_output[0]
+            # 修复 CE mean reduction 导致的梯度下溢：乘回序列长度
+            seq_len = g.shape[1]
+            g_scaled = g * seq_len
             key = self._key(layer, kind)
             
             # 计算 g^2 并对 batch/seq 取平均，得到 [Dim]
             with torch.no_grad():
-                g2 = (g ** 2).mean(dim=(0, 1)) 
+                g2 = (g_scaled ** 2).mean(dim=(0, 1)) 
                 if key not in self.sum_g2:
                     self.sum_g2[key] = g2.clone()
                     self.token_counts[key] = 1
@@ -276,7 +282,7 @@ def main():
     parser.add_argument(
         "--key_export_domain",
         type=str,
-        default="post_rope",
+        default="pre_rope",
         choices=["pre_rope", "post_rope"],
         help="导出 key 的域：pre_rope(k_proj原始输出) 或 post_rope(应用RoPE后，推荐)",
     )

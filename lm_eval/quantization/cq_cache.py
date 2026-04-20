@@ -22,6 +22,7 @@ from torch import nn
 
 from transformers.cache_utils import Cache, CacheLayerMixin
 from transformers.models.llama.configuration_llama import LlamaConfig
+from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
 
 
 @dataclass
@@ -83,7 +84,7 @@ class CodebookManager:
         return self._k_codebooks[layer_idx].clone(), self._v_codebooks[layer_idx].clone()
 
 
-def quantize_cq(input_tensor: torch.Tensor, centroids: torch.Tensor) -> torch.Tensor:
+def quantize_cq(input_tensor: torch.Tensor, centroids: torch.Tensor, chunk_size: int = 128) -> torch.Tensor:
     """Quantize grouped channels using CQ codebooks.
 
     Args:
@@ -100,27 +101,92 @@ def quantize_cq(input_tensor: torch.Tensor, centroids: torch.Tensor) -> torch.Te
         total_channels == num_groups * group_channels
     ), f"Mismatched dimensions: {total_channels} vs {num_groups} * {group_channels}"
 
+    if chunk_size <= 0:
+        raise ValueError(f"chunk_size must be > 0, got {chunk_size}")
+
     # Reshape input: [num_tokens, num_groups, group_channels]
     reshaped = input_tensor.view(num_tokens, num_groups, group_channels).float()
-    
-    # Ensure centroids are on the same device
-    centroids = centroids.to(input_tensor.device)
-    
-    # Vectorized distance computation: avoid Python loop
-    # reshaped: [num_tokens, num_groups, group_channels]
-    # centroids: [num_groups, num_centroids, group_channels]
-    # Compute L2 distance for all groups at once
-    # Expand dimensions for broadcasting: [num_tokens, num_groups, 1, group_channels] - [1, num_groups, num_centroids, group_channels]
-    reshaped_expanded = reshaped.unsqueeze(2)  # [num_tokens, num_groups, 1, group_channels]
-    centroids_expanded = centroids.unsqueeze(0)  # [1, num_groups, num_centroids, group_channels]
-    
-    # Compute squared L2 distance (faster than torch.cdist)
-    distances = torch.sum((reshaped_expanded - centroids_expanded) ** 2, dim=-1)  # [num_tokens, num_groups, num_centroids]
-    
-    # Find nearest centroid for each group
-    quantized = torch.argmin(distances, dim=-1).to(torch.uint8)  # [num_tokens, num_groups]
 
-    return quantized
+    # Keep computation in float32 for stability and predictable memory use
+    centroids = centroids.to(input_tensor.device, dtype=torch.float32)
+    centroid_norm = (centroids * centroids).sum(dim=-1).unsqueeze(0)  # [1, G, K]
+
+    quantized_chunks = []
+    for start in range(0, num_tokens, chunk_size):
+        end = min(start + chunk_size, num_tokens)
+        chunk = reshaped[start:end]  # [T, G, C]
+
+        # Squared L2 with algebraic expansion:
+        # ||x-c||^2 = ||x||^2 + ||c||^2 - 2 * x·c
+        chunk_norm = (chunk * chunk).sum(dim=-1, keepdim=True)  # [T, G, 1]
+        cross = torch.einsum("tgc,gkc->tgk", chunk, centroids)  # [T, G, K]
+        distances = chunk_norm + centroid_norm - (2.0 * cross)  # [T, G, K]
+
+        quantized_chunks.append(torch.argmin(distances, dim=-1).to(torch.uint8))
+
+    return torch.cat(quantized_chunks, dim=0)
+
+
+def _repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """Repeat KV heads to match query head count."""
+    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
+    if n_rep == 1:
+        return hidden_states
+    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
+    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
+
+
+def _eager_attention_forward(
+    module: nn.Module,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attention_mask: Optional[torch.Tensor],
+    scaling: float,
+    dropout: float = 0.0,
+    **kwargs,
+):
+    key_states = _repeat_kv(key, module.num_key_value_groups)
+    value_states = _repeat_kv(value, module.num_key_value_groups)
+
+    attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
+    if attention_mask is not None:
+        causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
+        attn_weights = attn_weights + causal_mask
+
+    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
+    attn_weights = nn.functional.dropout(attn_weights, p=dropout, training=module.training)
+    attn_output = torch.matmul(attn_weights, value_states)
+    attn_output = attn_output.transpose(1, 2).contiguous()
+
+    return attn_output, attn_weights
+
+
+def _select_attention_interface(attn_module: nn.Module) -> Callable:
+    """Pick eager/flash/sdpa backend when available, with eager fallback."""
+    attn_impl = getattr(getattr(attn_module, "config", None), "_attn_implementation", "eager")
+    if attn_impl == "eager":
+        return _eager_attention_forward
+
+    try:
+        from transformers.models.llama.modeling_llama import ALL_ATTENTION_FUNCTIONS
+
+        return ALL_ATTENTION_FUNCTIONS[attn_impl]
+    except Exception:
+        return _eager_attention_forward
+
+
+def _compute_kv_rope_embeddings(attn_module: nn.Module, key_states: torch.Tensor) -> Optional[tuple[torch.Tensor, torch.Tensor]]:
+    """Build RoPE embeddings for full KV length when cache stores pre-RoPE keys."""
+    rotary_emb = getattr(attn_module, "rotary_emb", None)
+    if rotary_emb is None:
+        rotary_emb = getattr(attn_module, "_cq_rotary_emb", None)
+    if rotary_emb is None:
+        return None
+
+    bsz, _, kv_seq_len, _ = key_states.shape
+    kv_position_ids = torch.arange(kv_seq_len, device=key_states.device).unsqueeze(0).expand(bsz, -1)
+    return rotary_emb(key_states, kv_position_ids)
 
 
 def dequantize_cq(indices: torch.Tensor, centroids: torch.Tensor) -> torch.Tensor:
@@ -322,10 +388,114 @@ def enable_cq_kv_cache(model: nn.Module, config: CQQuantizationConfig) -> Callab
     setattr(llama_model, "_cq_cache_factory", cache_factory)
     setattr(llama_model, "_cq_enabled", True)
 
+    if hasattr(llama_model, "rotary_emb"):
+        for layer in getattr(llama_model, "layers", []):
+            attn = getattr(layer, "self_attn", None)
+            if attn is not None:
+                setattr(attn, "_cq_rotary_emb", llama_model.rotary_emb)
+
     if hasattr(llama_model, "_cq_original_forward"):
         return getattr(llama_model, "_cq_disable")
 
     original_forward = llama_model.forward
+
+    original_attn_forwards: list[tuple[nn.Module, Callable]] = []
+    for layer in getattr(llama_model, "layers", []):
+        attn = getattr(layer, "self_attn", None)
+        if attn is None:
+            continue
+
+        original_attn_forward = attn.forward
+        original_attn_forwards.append((attn, original_attn_forward))
+
+        def make_patched_attention_forward(orig_forward: Callable) -> Callable:
+            def patched_attention_forward(
+                self,
+                hidden_states: torch.Tensor,
+                position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+                attention_mask: Optional[torch.Tensor] = None,
+                past_key_value: Optional[Cache] = None,
+                cache_position: Optional[torch.LongTensor] = None,
+                **kwargs,
+            ):
+                if not getattr(llama_model, "_cq_enabled", False):
+                    return orig_forward(
+                        hidden_states,
+                        position_embeddings=position_embeddings,
+                        attention_mask=attention_mask,
+                        past_key_value=past_key_value,
+                        cache_position=cache_position,
+                        **kwargs,
+                    )
+
+                if position_embeddings is None:
+                    position_embeddings = kwargs.get("position_embeddings", None)
+
+                input_shape = hidden_states.shape[:-1]
+                hidden_shape = (*input_shape, -1, self.head_dim)
+
+                query_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+                key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+                value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+
+                # IMPORTANT: update cache with pre-RoPE K/V to match pre-RoPE CQ codebook space.
+                if past_key_value is not None:
+                    cache_kwargs = {"cache_position": cache_position} if cache_position is not None else None
+                    key_states, value_states = past_key_value.update(
+                        key_states, value_states, self.layer_idx, cache_kwargs
+                    )
+
+                if position_embeddings is None:
+                    raise RuntimeError(
+                        "Missing position_embeddings for CQ attention patch; cannot apply RoPE to query/key states."
+                    )
+
+                cos_q, sin_q = position_embeddings
+                query_states, _ = apply_rotary_pos_emb(query_states, query_states, cos_q, sin_q)
+
+                kv_seq_len = key_states.shape[-2]
+                q_seq_len = query_states.shape[-2]
+                if kv_seq_len == q_seq_len:
+                    _, key_states = apply_rotary_pos_emb(key_states, key_states, cos_q, sin_q)
+                else:
+                    kv_position_embeddings = _compute_kv_rope_embeddings(self, key_states)
+                    if kv_position_embeddings is None:
+                        # Best-effort fallback: rotate only newly appended window when full KV RoPE is unavailable.
+                        _, key_tail = apply_rotary_pos_emb(
+                            key_states[..., -q_seq_len:, :], key_states[..., -q_seq_len:, :], cos_q, sin_q
+                        )
+                        key_states = torch.cat([key_states[..., :-q_seq_len, :], key_tail], dim=-2)
+                    else:
+                        cos_k, sin_k = kv_position_embeddings
+                        _, key_states = apply_rotary_pos_emb(key_states, key_states, cos_k, sin_k)
+
+                attention_interface = _select_attention_interface(self)
+
+                attn_kwargs = dict(kwargs)
+                attn_kwargs.pop("position_embeddings", None)
+                attn_kwargs.pop("position_ids", None)
+                attn_kwargs.pop("cache_position", None)
+                attn_kwargs.pop("past_key_value", None)
+                attn_kwargs.pop("use_cache", None)
+
+                attn_output, attn_weights = attention_interface(
+                    self,
+                    query_states,
+                    key_states,
+                    value_states,
+                    attention_mask,
+                    dropout=0.0 if not self.training else self.attention_dropout,
+                    scaling=getattr(self, "scaling", self.head_dim**-0.5),
+                    **attn_kwargs,
+                )
+
+                attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+                attn_output = self.o_proj(attn_output)
+                return attn_output, attn_weights
+
+            return patched_attention_forward
+
+        attn.forward = types.MethodType(make_patched_attention_forward(original_attn_forward), attn)
 
     def patched_forward(self, *args, **kwargs):
         use_cache = kwargs.get("use_cache", None)
@@ -340,9 +510,12 @@ def enable_cq_kv_cache(model: nn.Module, config: CQQuantizationConfig) -> Callab
     llama_model.forward = types.MethodType(patched_forward, llama_model)
 
     def disable():
+        for attn, orig_forward in original_attn_forwards:
+            attn.forward = orig_forward
         llama_model.forward = original_forward
         setattr(llama_model, "_cq_enabled", False)
 
     setattr(llama_model, "_cq_disable", disable)
     setattr(llama_model, "_cq_original_forward", original_forward)
+    setattr(llama_model, "_cq_original_attn_forwards", original_attn_forwards)
     return disable

@@ -17,7 +17,7 @@ python -m lm_eval.run_models --model hf \
     --model_args pretrained=meta-llama/Llama-3.1-8B,cq_codebook_dir=${CODEBOOK_DIR},attn_implementation=eager \
     --tasks winogrande \
     --batch_size auto \
-    --device cuda:7 \
+    --device cuda:5 \
     --verbosity INFO \
     --output_path results/llama-3.1-8b/cq_4c8b_winogrande_optimized.json 2>&1 | tee cq_test_optimized_log.txt
 

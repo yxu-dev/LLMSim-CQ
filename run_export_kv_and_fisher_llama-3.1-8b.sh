@@ -12,7 +12,7 @@ python export_kv_and_fisher.py \
   --output_dir "${OUTPUT_DIR}" \
   --num_samples 16 \
   --max_seq_len 2048 \
-  --key_export_domain post_rope \
+  --key_export_domain pre_rope \
   --num_coupled_channels 4 \
   --num_bits 8 \
   --dataset "wikitext" \
