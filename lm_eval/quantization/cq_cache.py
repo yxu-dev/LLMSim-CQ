@@ -33,6 +33,7 @@ class CQQuantizationConfig:
     layer_prefix: str = "layer"
     num_layers: Optional[int] = None
     device: Optional[torch.device] = None
+    sink_size: int = 4
 
 
 class CodebookManager:
@@ -217,16 +218,19 @@ class CQCacheLayer(CacheLayerMixin):
 
     is_sliding = False
 
-    def __init__(self, k_codebook: torch.Tensor, v_codebook: torch.Tensor):
+    def __init__(self, k_codebook: torch.Tensor, v_codebook: torch.Tensor, sink_size: int = 4):
         super().__init__()
         self.k_codebook = k_codebook
         self.v_codebook = v_codebook
         self.num_groups = k_codebook.shape[0]
         self.group_channels = k_codebook.shape[2]
         self.hidden_dim = self.num_groups * self.group_channels
+        self.sink_size = max(0, int(sink_size))
 
         self.k_indices: Optional[torch.Tensor] = None
         self.v_indices: Optional[torch.Tensor] = None
+        self.sink_k: Optional[torch.Tensor] = None
+        self.sink_v: Optional[torch.Tensor] = None
         self.batch_size: Optional[int] = None
         self.num_heads: Optional[int] = None
         self.head_dim: Optional[int] = None
@@ -247,6 +251,12 @@ class CQCacheLayer(CacheLayerMixin):
 
         self.k_codebook = self.k_codebook.to(self.layer_device, dtype=torch.float32)
         self.v_codebook = self.v_codebook.to(self.layer_device, dtype=torch.float32)
+        self.sink_k = torch.empty(
+            (self.batch_size, self.num_heads, 0, self.head_dim),
+            dtype=self.tensor_dtype,
+            device=self.layer_device,
+        )
+        self.sink_v = torch.empty_like(self.sink_k)
         self.k_indices = torch.empty(
             (self.batch_size, 0, self.num_groups), dtype=torch.uint8, device=self.layer_device
         )
@@ -262,21 +272,30 @@ class CQCacheLayer(CacheLayerMixin):
             self.lazy_initialization(key_states)
 
         seq_len = key_states.shape[2]
-        flat_k = self._flatten_heads(key_states)
-        flat_v = self._flatten_heads(value_states)
+        sink_len = 0 if self.sink_k is None else self.sink_k.shape[2]
+        fill_to_sink = min(max(self.sink_size - sink_len, 0), seq_len)
 
-        new_k_indices = quantize_cq(flat_k, self.k_codebook)
-        new_v_indices = quantize_cq(flat_v, self.v_codebook)
-        new_k_indices = new_k_indices.view(self.batch_size, seq_len, self.num_groups)
-        new_v_indices = new_v_indices.view(self.batch_size, seq_len, self.num_groups)
+        if fill_to_sink > 0:
+            sink_k_chunk = key_states[:, :, :fill_to_sink, :].to(self.tensor_dtype)
+            sink_v_chunk = value_states[:, :, :fill_to_sink, :].to(self.tensor_dtype)
+            self.sink_k = torch.cat([self.sink_k, sink_k_chunk], dim=2)
+            self.sink_v = torch.cat([self.sink_v, sink_v_chunk], dim=2)
 
-        self.k_indices = torch.cat([self.k_indices, new_k_indices], dim=1)
-        self.v_indices = torch.cat([self.v_indices, new_v_indices], dim=1)
+        quant_start = fill_to_sink
+        if quant_start < seq_len:
+            q_k = key_states[:, :, quant_start:, :]
+            q_v = value_states[:, :, quant_start:, :]
+            flat_k = self._flatten_heads(q_k)
+            flat_v = self._flatten_heads(q_v)
+
+            new_k_indices = quantize_cq(flat_k, self.k_codebook).view(self.batch_size, seq_len - quant_start, self.num_groups)
+            new_v_indices = quantize_cq(flat_v, self.v_codebook).view(self.batch_size, seq_len - quant_start, self.num_groups)
+
+            self.k_indices = torch.cat([self.k_indices, new_k_indices], dim=1)
+            self.v_indices = torch.cat([self.v_indices, new_v_indices], dim=1)
+
         self.total_seq_len += seq_len
-
-        decoded_k = self._decode_indices(self.k_indices, kind="k")
-        decoded_v = self._decode_indices(self.v_indices, kind="v")
-        return decoded_k, decoded_v
+        return self.materialize()
 
     def get_mask_sizes(self, cache_position: torch.Tensor) -> tuple[int, int]:
         query_length = cache_position.shape[0]
@@ -295,13 +314,26 @@ class CQCacheLayer(CacheLayerMixin):
                 (self.batch_size, 0, self.num_groups), dtype=torch.uint8, device=self.layer_device
             )
             self.v_indices = torch.empty_like(self.k_indices)
+        if self.sink_k is not None:
+            self.sink_k = self.sink_k[:, :, :0, :]
+            self.sink_v = self.sink_v[:, :, :0, :]
         self.total_seq_len = 0
 
     def crop(self, max_length: int) -> None:
         if self.k_indices is None:
             return
-        self.k_indices = self.k_indices[:, :max_length]
-        self.v_indices = self.v_indices[:, :max_length]
+
+        sink_len = 0 if self.sink_k is None else self.sink_k.shape[2]
+        if max_length <= sink_len:
+            if self.sink_k is not None:
+                self.sink_k = self.sink_k[:, :, :max_length, :]
+                self.sink_v = self.sink_v[:, :, :max_length, :]
+            self.k_indices = self.k_indices[:, :0, :]
+            self.v_indices = self.v_indices[:, :0, :]
+        else:
+            quant_keep = max_length - sink_len
+            self.k_indices = self.k_indices[:, :quant_keep, :]
+            self.v_indices = self.v_indices[:, :quant_keep, :]
         self.total_seq_len = min(self.total_seq_len, max_length)
 
     def batch_repeat_interleave(self, repeats: int) -> None:
@@ -309,6 +341,9 @@ class CQCacheLayer(CacheLayerMixin):
             return
         self.k_indices = self.k_indices.repeat_interleave(repeats, dim=0)
         self.v_indices = self.v_indices.repeat_interleave(repeats, dim=0)
+        if self.sink_k is not None:
+            self.sink_k = self.sink_k.repeat_interleave(repeats, dim=0)
+            self.sink_v = self.sink_v.repeat_interleave(repeats, dim=0)
         self.batch_size = self.k_indices.shape[0]
 
     def batch_select_indices(self, indices: torch.Tensor) -> None:
@@ -316,24 +351,43 @@ class CQCacheLayer(CacheLayerMixin):
             return
         self.k_indices = self.k_indices[indices]
         self.v_indices = self.v_indices[indices]
+        if self.sink_k is not None:
+            self.sink_k = self.sink_k[indices]
+            self.sink_v = self.sink_v[indices]
         self.batch_size = self.k_indices.shape[0]
 
     def offload(self):
         if self.k_indices is not None:
             self.k_indices = self.k_indices.to("cpu", non_blocking=True)
             self.v_indices = self.v_indices.to("cpu", non_blocking=True)
+            if self.sink_k is not None:
+                self.sink_k = self.sink_k.to("cpu", non_blocking=True)
+                self.sink_v = self.sink_v.to("cpu", non_blocking=True)
             self.layer_device = torch.device("cpu")
 
     def prefetch(self):
         if self.k_indices is not None and self.compute_device is not None:
             self.k_indices = self.k_indices.to(self.compute_device, non_blocking=True)
             self.v_indices = self.v_indices.to(self.compute_device, non_blocking=True)
+            if self.sink_k is not None:
+                self.sink_k = self.sink_k.to(self.compute_device, non_blocking=True)
+                self.sink_v = self.sink_v.to(self.compute_device, non_blocking=True)
             self.layer_device = self.compute_device
 
     def materialize(self) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
         if self.k_indices is None:
             return None, None
-        return self._decode_indices(self.k_indices, kind="k"), self._decode_indices(self.v_indices, kind="v")
+        decoded_k = self._decode_indices(self.k_indices, kind="k")
+        decoded_v = self._decode_indices(self.v_indices, kind="v")
+
+        full_k = decoded_k
+        full_v = decoded_v
+        if self.sink_k is not None and self.sink_k.shape[2] > 0:
+            sink_k = self.sink_k.to(self.tensor_dtype)
+            sink_v = self.sink_v.to(self.tensor_dtype)
+            full_k = torch.cat([sink_k, decoded_k], dim=2)
+            full_v = torch.cat([sink_v, decoded_v], dim=2)
+        return full_k, full_v
 
     # ---------------------------------------------------------------------
     # Helpers
@@ -344,6 +398,13 @@ class CQCacheLayer(CacheLayerMixin):
         return tensor.view(batch * seq_len, num_heads * head_dim)
 
     def _decode_indices(self, indices: torch.Tensor, kind: str) -> torch.Tensor:
+        if indices.shape[1] == 0:
+            return torch.empty(
+                (self.batch_size, self.num_heads, 0, self.head_dim),
+                dtype=self.tensor_dtype,
+                device=self.layer_device,
+            )
+
         codebook = self.k_codebook if kind == "k" else self.v_codebook
         flat = indices.reshape(-1, self.num_groups)
         decoded = dequantize_cq(flat, codebook)
@@ -355,12 +416,12 @@ class CQCacheLayer(CacheLayerMixin):
 class QuantizedDynamicCache(Cache):
     """Cache container backed by CQCacheLayer per decoder block."""
 
-    def __init__(self, codebook_manager: CodebookManager, config: LlamaConfig):
+    def __init__(self, codebook_manager: CodebookManager, config: LlamaConfig, sink_size: int = 4):
         layers = []
         num_layers = min(codebook_manager.num_layers, config.num_hidden_layers)
         for layer_idx in range(num_layers):
             k_cb, v_cb = codebook_manager.get_codebooks(layer_idx)
-            layers.append(CQCacheLayer(k_cb, v_cb))
+            layers.append(CQCacheLayer(k_cb, v_cb, sink_size=sink_size))
         super().__init__(layers=layers)
 
     def __getitem__(self, layer_idx: int):  # type: ignore[override]
@@ -381,9 +442,11 @@ def enable_cq_kv_cache(model: nn.Module, config: CQQuantizationConfig) -> Callab
     llama_model = model.model
     num_layers = getattr(model.config, "num_hidden_layers", None)
     manager = CodebookManager(config.codebook_dir, config.layer_prefix, num_layers)
+    setattr(llama_model, "_cq_manager", manager)
+    setattr(llama_model, "_cq_sink_size", max(0, int(config.sink_size)))
 
     def cache_factory() -> QuantizedDynamicCache:
-        return QuantizedDynamicCache(manager, model.config)
+        return QuantizedDynamicCache(manager, model.config, sink_size=config.sink_size)
 
     setattr(llama_model, "_cq_cache_factory", cache_factory)
     setattr(llama_model, "_cq_enabled", True)
@@ -444,6 +507,38 @@ def enable_cq_kv_cache(model: nn.Module, config: CQQuantizationConfig) -> Callab
                     key_states, value_states = past_key_value.update(
                         key_states, value_states, self.layer_idx, cache_kwargs
                     )
+                else:
+                    # Prefill / Loglikelihood 阶段，强制模拟量化误差
+                    manager = getattr(llama_model, "_cq_manager", None)
+                    if manager is not None:
+                        # 1) 获取当前层码本并放到对应设备
+                        k_cb, v_cb = manager.get_codebooks(self.layer_idx)
+                        k_cb = k_cb.to(key_states.device)
+                        v_cb = v_cb.to(value_states.device)
+
+                        # 2) 局部模拟：FP -> 索引 -> 反量化
+                        def _simulate_quant_dequant(
+                            tensor: torch.Tensor,
+                            codebook: torch.Tensor,
+                            sink_size: int = 4,
+                        ) -> torch.Tensor:
+                            batch, n_heads, seq_len, head_dim = tensor.shape
+                            if seq_len <= sink_size:
+                                return tensor
+
+                            sink = tensor[:, :, :sink_size, :]
+                            tail = tensor[:, :, sink_size:, :]
+                            flat = tail.transpose(1, 2).reshape(batch * (seq_len - sink_size), n_heads * head_dim)
+                            indices = quantize_cq(flat, codebook)
+                            decoded = dequantize_cq(indices.reshape(-1, codebook.shape[0]), codebook)
+                            decoded = decoded.view(batch, seq_len - sink_size, n_heads, head_dim).transpose(1, 2)
+                            decoded = decoded.to(tensor.dtype)
+                            return torch.cat([sink, decoded], dim=2)
+
+                        # 3) 替换为量化受损特征
+                        local_sink_size = getattr(llama_model, "_cq_sink_size", 4)
+                        key_states = _simulate_quant_dequant(key_states, k_cb, sink_size=local_sink_size)
+                        value_states = _simulate_quant_dequant(value_states, v_cb, sink_size=local_sink_size)
 
                 if position_embeddings is None:
                     raise RuntimeError(

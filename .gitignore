@@ -243,3 +243,5 @@ trash/
 results/
 .DS_Store
 tmp_codebook/
+baseline_test_optimized_log.txt
+cq_test_optimized_log.txt
