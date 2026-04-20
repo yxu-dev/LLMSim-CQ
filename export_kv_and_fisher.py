@@ -284,7 +284,7 @@ def main():
         type=str,
         default="pre_rope",
         choices=["pre_rope", "post_rope"],
-        help="导出 key 的域：pre_rope(k_proj原始输出) 或 post_rope(应用RoPE后，推荐)",
+        help="导出 key 的域：pre_rope(k_proj原始输出) 或 post_rope(应用RoPE后)",
     )
     
     args = parser.parse_args()
