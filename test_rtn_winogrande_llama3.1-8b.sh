@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${PROJECT_ROOT}"
+
 # RTN (per-tensor) Winogrande evaluation entry.
 # NOTE:
 # - Dataset loading is handled internally by lm_eval when --tasks winogrande is set.
@@ -12,7 +15,7 @@ echo "开始测试 RTN per-tensor (Winogrande)"
 echo "================================================"
 
 START_TIME=$(date +%s)
-RESULT_DIR="/home/zz359/workspace-CQ-zzy/LLMSim-CQ-zzy/result/llama-3.1-8b"
+RESULT_DIR="${RESULT_DIR:-result/llama-3.1-8b}"
 mkdir -p "${RESULT_DIR}"
 
 python -m lm_eval.run_models --model hf \

@@ -16,6 +16,11 @@ Baseline
 bash test_baseline_winogrande_llama3.1-8b.sh
 '''
 
+RTN
+'''
+bash test_rtn_winogrande_llama3.1-8b.sh
+'''
+
 CQ
 '''
 bash test_cq_llama-3.1-8b_optimized.sh

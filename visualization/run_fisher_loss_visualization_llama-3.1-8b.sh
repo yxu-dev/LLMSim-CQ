@@ -2,9 +2,12 @@
 
 set -euo pipefail
 
-PROJECT_ROOT="/home/zz359/workspace-CQ-zzy/LLMSim-CQ-zzy"
-PY_SCRIPT="${PROJECT_ROOT}/visualization/fisher_loss_visualization.py"
-OUTPUT_DIR="${PROJECT_ROOT}/visualization/fisher-loss"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PY_SCRIPT="${SCRIPT_DIR}/fisher_loss_visualization.py"
+OUTPUT_DIR="${OUTPUT_DIR:-visualization/fisher-loss}"
+
+cd "${PROJECT_ROOT}"
 
 # 你可以在命令前覆盖这些变量：
 #   CUDA_VISIBLE_DEVICES=0 bash visualization/run_fisher_loss_visualization.sh

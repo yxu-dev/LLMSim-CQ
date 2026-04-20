@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 
-export CUDA_VISIBLE_DEVICES=7
+export CUDA_VISIBLE_DEVICES=5
 
 set -euo pipefail
 
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${PROJECT_ROOT}"
+
 # fisher_diag.pt 和 kv_cache/
-DATA_ROOT="/home/zz359/workspace-CQ-zzy/LLMSim-CQ-zzy/output/llama-3.1-8b-2c4b"
+DATA_ROOT="${DATA_ROOT:-output/llama-3.1-8b-4c8b}"
 
 # 质心保存目录
 OUTPUT_DIR="${DATA_ROOT}/centroids"

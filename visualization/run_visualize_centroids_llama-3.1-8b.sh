@@ -21,10 +21,13 @@ set -euo pipefail
 #   PCA_MAX_POINTS  default: 10000
 # ==========================================================
 
-PROJECT_ROOT="/home/zz359/workspace-CQ-zzy/LLMSim-CQ-zzy"
-DATA_ROOT="${DATA_ROOT:-${PROJECT_ROOT}/output/llama-3.1-8b-2c8b}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+DATA_ROOT="${DATA_ROOT:-output/llama-3.1-8b-2c8b}"
 CENTROIDS_DIR="${CENTROIDS_DIR:-${DATA_ROOT}/centroids}"
-VIS_ROOT="${VIS_ROOT:-${PROJECT_ROOT}/visualization/centroids/llama-3.1-8b_2c8b}"
+VIS_ROOT="${VIS_ROOT:-visualization/centroids/llama-3.1-8b_2c8b}"
+
+cd "${PROJECT_ROOT}"
 
 TARGET_LAYER="${TARGET_LAYER:-all}"
 TARGET_LAYERS="${TARGET_LAYERS:-0,4,8,12,16,20,24,28,31}"
@@ -33,7 +36,7 @@ GROUP_ID="${GROUP_ID:-0}"
 BINS="${BINS:-120}"
 PCA_MAX_POINTS="${PCA_MAX_POINTS:-10000}"
 
-SCRIPT_PATH="${PROJECT_ROOT}/centroids_visualize.py"
+SCRIPT_PATH="${SCRIPT_DIR}/centroids_visualize.py"
 
 if [[ ! -f "${SCRIPT_PATH}" ]]; then
   echo "[Error] Script not found: ${SCRIPT_PATH}"

@@ -69,7 +69,7 @@ So results reflect actual inference-time quality, not only offline tensor recons
 ### 1) Enter the project directory
 
 ```bash
-cd /home/zz359/workspace-CQ-zzy/LLMSim-CQ-zzy
+cd LLMSim-CQ
 ```
 
 ### 2) Create the `vq` environment (one-time)
@@ -176,7 +176,7 @@ Equivalent core command:
 ```bash
 python export_kv_and_fisher.py \
   --model "meta-llama/Meta-Llama-3.1-8B" \
-  --output_dir "/home/zz359/workspace-CQ-zzy/LLMSim-CQ-zzy/output/llama-3.1-8b-2c4b" \
+  --output_dir "output/llama-3.1-8b-2c4b" \
   --num_samples 16 \
   --max_seq_len 2048 \
   --key_export_domain post_rope \
