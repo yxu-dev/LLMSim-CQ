@@ -235,14 +235,14 @@ def main(args):
     os.makedirs(args.output_dir, exist_ok=True)
 
     print(f"--> Learning KEY Centroids...")
-    k_centroids = learn_weighted_cq_centroids(K_tensors, k_fisher_weights, num_bits=8)
+    k_centroids = learn_weighted_cq_centroids(K_tensors, k_fisher_weights, num_bits=args.num_bits)
     if k_centroids is not None:
         save_path = os.path.join(args.output_dir, f"k_centroids_fisher_layer{args.layer_idx}.npy")
         np.save(save_path, k_centroids)
         print(f"  [Saved] {save_path}")
 
     print(f"--> Learning VALUE Centroids...")
-    v_centroids = learn_weighted_cq_centroids(V_tensors, v_fisher_weights, num_bits=8)
+    v_centroids = learn_weighted_cq_centroids(V_tensors, v_fisher_weights, num_bits=args.num_bits)
     if v_centroids is not None:
         save_path = os.path.join(args.output_dir, f"v_centroids_fisher_layer{args.layer_idx}.npy")
         np.save(save_path, v_centroids)
@@ -256,5 +256,6 @@ if __name__ == "__main__":
                         help="可选：手动指定 fisher_diag.pt 路径，如果不指定则在 data_path 下找")
     parser.add_argument("--layer_idx", type=int, required=True, help="目标层索引")
     parser.add_argument("--output_dir", type=str, default="centroids", help="质心保存目录")
+    parser.add_argument("--num_bits", type=int, default=8, help="每组码本位宽，质心数为 2^num_bits")
     args = parser.parse_args()
     main(args)

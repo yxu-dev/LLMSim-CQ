@@ -10,6 +10,9 @@ cd "${PROJECT_ROOT}"
 # fisher_diag.pt 和 kv_cache/
 DATA_ROOT="${DATA_ROOT:-output/llama-3.1-8b-4c8b}"
 
+# 码本位宽 b，质心数量为 2^b
+NUM_BITS="${NUM_BITS:-8}"
+
 # 质心保存目录
 OUTPUT_DIR="${DATA_ROOT}/centroids"
 
@@ -20,6 +23,7 @@ echo "=========================================================="
 echo "Starting Weighted K-Means Clustering for ${NUM_LAYERS} layers..."
 echo "Data Source: ${DATA_ROOT}"
 echo "Output Dir:  ${OUTPUT_DIR}"
+echo "Num Bits:    ${NUM_BITS}"
 echo "=========================================================="
 
 # 创建输出目录
@@ -33,7 +37,8 @@ for (( i=0; i<NUM_LAYERS; i++ )); do
     python "generate_centroids.py" \
       --data_path "${DATA_ROOT}" \
       --layer_idx "$i" \
-      --output_dir "${OUTPUT_DIR}"
+      --output_dir "${OUTPUT_DIR}" \
+      --num_bits "${NUM_BITS}"
       
     echo ">>> Layer $i Done."
 done
