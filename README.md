@@ -1,6 +1,6 @@
 # LLMSim-CQ
 
-This repository is an engineering reproduction of the NeurIPS 2024 paper:
+This repository is an engineering reproduction of the NeurIPS 2024 paper. It is provided on a best-effort basis, and the reproduced implementation, pipeline, and results may be incomplete, imperfect, or not fully correct relative to the original work:
 
 KV Cache is 1 Bit Per Channel: Efficient Large Language Model Inference with Coupled Quantization  
 Tianyi Zhang, Jonah Yi, Zhaozhuo Xu, Anshumali Shrivastava  
